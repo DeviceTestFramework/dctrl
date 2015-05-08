@@ -1,0 +1,140 @@
+#!/usr/bin/env python2
+
+#
+# Copyright (C) 2015 Prevas A/S
+#
+# This file is part of dctrl, an embedded device control framework
+#
+# dctrl is free software; you can redistribute it and/or modify it under the
+# terms of the GNU Lesser General Public License as published by the Free
+# Software Foundation; either version 2.1 of the License, or (at your option)
+# any later version.
+#
+# dctrl is distributed in the hope that it will be useful, but WITHOUT ANY
+# WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+# FOR A PARTICULAR PURPOSE.  See the GNU Lesser General Public License for
+# more details.
+#
+# You should have received a copy of the GNU Lesser General Public License
+# along with this library; if not, write to the Free Software Foundation,
+# Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+#
+
+import argparse
+import sys
+import os
+import logging
+import yaml
+
+
+if __name__ == "__main__":
+
+    del sys.path[0]
+    import dctrl
+
+    dctrl.prog = os.path.basename(sys.argv[0])
+    (PROG, ext) = os.path.splitext(dctrl.prog)
+
+    parser = argparse.ArgumentParser(
+        prog=dctrl.prog,
+        description="Control a remote (embedded) device.")
+    parser.add_argument('--version', action='version',
+                        version='%s %s'%(dctrl.prog, dctrl.version))
+
+    parser.add_argument('-q', '--quiet', action='count',
+                        help='less output')
+    parser.add_argument('-v', '--verbose', action='count',
+                        help='more output')
+
+    parser.add_argument('-c', '--config-file',
+                        default='conf/dctrl.cfg',
+                        help='configuration file [default: %(default)s]')
+
+    parser.add_argument('-t', '--tmp-dir',
+                        default='tmp/',
+                        help='directory to use for temporary output '
+                        '[default: %(default)s]')
+
+    parser.add_argument("-l", "--log", action="store_true",
+                        default=False,
+                        help="log command output to a file")
+
+    parser.add_argument("-L", "--logfile", metavar="FILE",
+                        default="stdout",
+                        help="use FILE as logfile [default: %(default)s]")
+
+    known_args, ekstra = parser.parse_known_args()
+
+    dctrl.subparsers = parser.add_subparsers()
+
+    # search DCTRLPATH (or current dir) for commands
+    import dctrl.load
+    dctrl.load.load_commands(config_filename=known_args.config_file)
+
+    args = parser.parse_args()
+
+    logging_level = 0
+    if args.quiet:
+        logging_level -= args.quiet
+    del args.quiet
+    if args.verbose:
+        logging_level += args.verbose
+    del args.verbose
+    if logging_level > 1:
+        logging_level = logging.DEBUG
+    elif logging_level == 1:
+        logging_level = logging.INFO
+    elif logging_level == 0:
+        logging_level = logging.WARNING
+    elif logging_level == -1:
+        logging_level = logging.ERROR
+    else:
+        logging_level = logging.CRITICAL
+    logger = dctrl.logger = logging.getLogger('dctrl')
+    dctrl.logger.setLevel(logging_level)
+    dctrl.logger_console = logging.StreamHandler()
+    dctrl.logger_console.setLevel(logging_level)
+    console_formatter = logging.Formatter(
+        '%(levelname)s: %(message)s')
+    dctrl.logger_console.setFormatter(console_formatter)
+    logger.addHandler(dctrl.logger_console)
+    logger.propagate = False
+
+    import dctrl.config
+    try:
+        dctrl.config.load(args.config_file, args.run)
+    except dctrl.config.ConfigError as e:
+        logger.error(': '.join(e.args))
+        sys.exit(2)
+    del args.config_file
+
+    if not args.log:
+        args.logfile = None
+    del args.log
+
+    cmd = args.run
+    args = vars(args)
+    dctrl.config.config['params'] = args
+
+    logger.debug("config: %s", dctrl.config.config)
+
+    import dctrl.command
+    try:
+        ret = dctrl.command.run(cmd)
+    except Exception as e:
+        logger.debug("Exception in %s"%(cmd.get_name()), exc_info=True)
+        ret = (2, "%s: Exception: %s"%(cmd.get_name(), e))
+    assert isinstance(ret, tuple) and len(ret) == 2 and ret[0] in (0, 1, 2)
+    exitcode = ret[0]
+    if exitcode == 0:
+        ret = ('PASS', ret[1])
+    elif exitcode == 1:
+        ret = ('FAIL', ret[1])
+    else:
+        ret = ('ERROR', ret[1])
+    if logger.getEffectiveLevel() < logging.CRITICAL:
+        if ret[1]:
+            print '%s: %s'%ret
+        else:
+            print ret[0]
+    sys.exit(exitcode)
